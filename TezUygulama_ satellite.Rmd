@@ -1,0 +1,943 @@
+---
+title: "Topluluk Öğrenmesi Yaklaşımıyla Anomali Belirleme"
+author: "Nihat AKILLI"
+date: "Tez Uygulama Çalışması - satellite-unsupervised-ad.csv"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{=html}
+<style type="text/css">
+.main-container {
+  margin-left: auto;
+  margin-right: auto;
+  text-align: justify
+}
+.main-content{
+    max-width:1300px !important;
+}
+
+</style>
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=12, warning=FALSE, message=FALSE)
+```
+
+# Verinin Hazırlanması
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+kaynak <- "dataverse_files/satellite-unsupervised-ad.csv"
+data <- read.csv(kaynak, header = FALSE)
+
+attach(data)
+
+```
+
+Sınıf değişkeni kategorik olduğundan değerler "Majority" ve "Minority" olarak değiştirilmiştir. Diğer değişkenler de sayısal değerler olduğu için değişken tipi olarak nümerik belirlenmiştir. 
+
+```{r}
+numberOfColumn <- ncol(data)-1 # Bağımsız değişken sayısı
+
+colnames(data) <- as.character( c( paste0("col", as.character(1:numberOfColumn)), "Class" ) )# Sutunlara isim verilmesi
+
+data$Class <- as.factor(data$Class)
+levels(data$Class)[levels(data$Class) == "n"] <- "Majority"
+levels(data$Class)[levels(data$Class) == "o"] <- "Minority"
+
+data[,1:numberOfColumn] = apply(data[,1:numberOfColumn], 2, function(x) as.numeric(as.character(x))); #Sayısal değere çevirme
+data <- na.omit(data) 
+
+```
+
+Yukarıda yapılanlar özetlenmiştir:
+
+```{r}
+library(factoextra)
+str(data)
+
+```
+
+### Verisetinin İlk 10 Satırlık Kısmının Görünümü
+
+```{r }
+library(knitr)
+kable(data[1:10,])
+
+```
+
+### Yeniden Örnekleme Yöntemi Uygulanması
+
+```{r}
+library(imbalance)
+
+data_imbalanced <- data
+
+data_minority <- data[data$Class == "Minority",]
+data_majority <- data[data$Class == "Majority",]
+
+set.seed(345)
+
+data_minority_oversampled <- data_minority[sample(x = 1:nrow(data_minority), size =  nrow(data_majority), replace = TRUE),]
+
+data_balanced_ROS <- rbind(data_minority_oversampled,data_majority)
+
+data_balanced_SMOTE <- oversample( data, "ADASYN", ratio = 1)
+
+```
+
+### Tanımlayıcı İstatistikler
+
+```{r}
+summary(data_imbalanced)
+
+summary(data_balanced_ROS)
+
+summary(data_balanced_SMOTE)
+
+```
+
+### Verinin Görselleştirilmesi
+
+```{r fig.width=8, fig.height=4}
+library(funModeling)
+
+freq(data_imbalanced)
+freq(data_balanced_ROS)
+freq(data_balanced_SMOTE)
+
+```
+
+### Verisetinin Eğitim-Test Verisi (%70 - %30) Olarak Ayrılması
+
+```{r }
+set.seed(345)
+
+indices <- sample(2, size = nrow(data_imbalanced), replace = TRUE, prob=c(0.7,0.3))
+egitim_data_imbalanced <- data_imbalanced[indices == 1,  ]
+test_data_imbalanced <- data_imbalanced[indices == 2, ]
+
+indices <- sample(2, size=nrow(data_balanced_ROS), replace = TRUE, prob=c(0.7,0.3))
+egitim_data_balanced_ROS <- data_balanced_ROS[indices == 1,  ]
+
+
+indices <- sample(2, size=nrow(data_balanced_SMOTE), replace = TRUE, prob=c(0.7,0.3))
+egitim_data_balanced_SMOTE <- data_balanced_SMOTE[indices == 1,  ]
+
+```
+
+Veriseti %70 eğitim; %30 test verisi olacak şekilde rastgele ayrılmıştır.
+
+### 1. Sınıflandırma Ağacı Yöntemi
+
+```{r fig.height=8, fig.width=8}
+library(tree)
+library(rpart)
+library(rpart.plot)
+
+set.seed(345)
+
+tree_model_imbalanced=rpart(as.factor(egitim_data_imbalanced$Class)~., egitim_data_imbalanced)
+tree_model_balanced_ROS=rpart(as.factor(egitim_data_balanced_ROS$Class)~., egitim_data_balanced_ROS)
+tree_model_balanced_SMOTE=rpart(as.factor(egitim_data_balanced_SMOTE$Class)~., egitim_data_balanced_SMOTE)
+
+```
+
+### 2. Bagging Yöntemi
+
+```{r fig.height=6}
+library(randomForest)
+
+set.seed(345)
+
+mtry_value <- ceiling(sqrt(numberOfColumn))
+mtry_value
+
+rf_model_imbalanced <- randomForest(egitim_data_imbalanced$Class~., 
+                        data = egitim_data_imbalanced, 
+                        mtry = mtry_value,
+                        importance = TRUE)
+
+rf_model_balanced_ROS <- randomForest(egitim_data_balanced_ROS$Class~., 
+                        data = egitim_data_balanced_ROS, 
+                        mtry = mtry_value,
+                        importance = TRUE)
+
+rf_model_balanced_SMOTE <- randomForest(egitim_data_balanced_SMOTE$Class~., 
+                        data = egitim_data_balanced_SMOTE, 
+                        mtry = mtry_value,
+                        importance = TRUE)
+
+```
+
+### 3. Boosting Yöntemi
+
+```{r}
+library(xgboost)
+
+set.seed(345)
+
+xgboost_model_imbalanced <- xgboost(data = as.matrix(egitim_data_imbalanced[1:numberOfColumn]), 
+                        label = as.numeric(egitim_data_imbalanced$Class)-1, 
+                        nrounds = 100, 
+                        verbose = FALSE, 
+                        objective='reg:logistic')
+
+xgboost_model_balanced_ROS <- xgboost(data = as.matrix(egitim_data_balanced_ROS[1:numberOfColumn]), 
+                        label = as.numeric(egitim_data_balanced_ROS$Class)-1, 
+                        nrounds = 100, 
+                        verbose = FALSE, 
+                        objective='reg:logistic')
+
+xgboost_model_balanced_SMOTE <- xgboost(data = as.matrix(egitim_data_balanced_SMOTE[1:numberOfColumn]), 
+                        label = as.numeric(egitim_data_balanced_SMOTE$Class)-1, 
+                        nrounds = 100, 
+                        verbose = FALSE, 
+                        objective='reg:logistic')
+
+
+```
+
+#### Dengesizlik Durumunda Tahminleme
+
+```{r fig.height=8,fig.width=10}
+library("ROCR")
+yhat_tree_imbalanced_class <- predict(tree_model_imbalanced, newdata = test_data_imbalanced, type = "class", cutoff = ) 
+yhat_tree_imbalanced_prob <- predict(tree_model_imbalanced, newdata = test_data_imbalanced, type = "prob") 
+
+yhat_rf_imbalanced_class <- predict(rf_model_imbalanced, newdata = test_data_imbalanced, type = "class")
+yhat_rf_imbalanced_prob <- predict(rf_model_imbalanced, newdata = test_data_imbalanced, type = "prob")
+
+yhat_xgboost_imbalanced_prob <- predict(xgboost_model_imbalanced, newdata = as.matrix(test_data_imbalanced[1:numberOfColumn]))
+yhat_xgboost_imbalanced_class <- round(yhat_xgboost_imbalanced_prob,0)
+
+yhat_xgboost_imbalanced_class <- factor(yhat_xgboost_imbalanced_class)
+levels(yhat_xgboost_imbalanced_class)[levels(yhat_xgboost_imbalanced_class) == 0] <- "Majority"
+levels(yhat_xgboost_imbalanced_class)[levels(yhat_xgboost_imbalanced_class) == 1] <- "Minority"
+
+```
+
+#### Dengesizlik Giderildiği Durumda Tahminleme
+
+Hem prob olarak hem class olarak tahminleme yapıldı. 
+
+```{r fig.height=8}
+
+yhat_tree_balanced_ROS_prob <- predict(tree_model_balanced_ROS, 
+                                          newdata = test_data_imbalanced, type = "prob")
+yhat_tree_balanced_ROS_class <- predict(tree_model_balanced_ROS, 
+                                           newdata = test_data_imbalanced, type = "class")
+
+
+yhat_rf_balanced_ROS_prob <- predict(rf_model_balanced_ROS, 
+                                        newdata = test_data_imbalanced, type = "prob")
+yhat_rf_balanced_ROS_class <- predict(rf_model_balanced_ROS, 
+                                         newdata = test_data_imbalanced, type = "class")
+
+
+yhat_xgboost_balanced_ROS_prob  <- predict(xgboost_model_balanced_ROS, 
+                                              as.matrix(test_data_imbalanced[1:numberOfColumn]), 
+                                              type = "prob")
+yhat_xgboost_balanced_ROS_class <- round(yhat_xgboost_balanced_ROS_prob,0)
+yhat_xgboost_balanced_ROS_class <- factor(yhat_xgboost_balanced_ROS_class)
+levels(yhat_xgboost_balanced_ROS_class)[levels(yhat_xgboost_balanced_ROS_class) == 0] <- "Majority"
+levels(yhat_xgboost_balanced_ROS_class)[levels(yhat_xgboost_balanced_ROS_class) == 1] <- "Minority"
+
+
+yhat_tree_balanced_SMOTE_prob <- predict(tree_model_balanced_SMOTE, 
+                                          newdata = test_data_imbalanced, type = "prob") 
+yhat_tree_balanced_SMOTE_class <- predict(tree_model_balanced_SMOTE, 
+                                           newdata = test_data_imbalanced, type = "class") 
+
+
+yhat_rf_balanced_SMOTE_prob <- predict(rf_model_balanced_SMOTE, 
+                                        newdata = test_data_imbalanced, type = "prob")
+yhat_rf_balanced_SMOTE_class <- predict(rf_model_balanced_SMOTE, 
+                                         newdata = test_data_imbalanced, type = "class")
+
+
+yhat_xgboost_balanced_SMOTE_prob <- predict(xgboost_model_balanced_SMOTE, 
+                                             as.matrix(test_data_imbalanced[1:numberOfColumn]), 
+                                             type = "prob")
+yhat_xgboost_balanced_SMOTE_class <- round(yhat_xgboost_balanced_SMOTE_prob,0)
+yhat_xgboost_balanced_SMOTE_class <- factor(yhat_xgboost_balanced_SMOTE_class)
+levels(yhat_xgboost_balanced_SMOTE_class)[levels(yhat_xgboost_balanced_SMOTE_class) == 0] <- "Majority"
+levels(yhat_xgboost_balanced_SMOTE_class)[levels(yhat_xgboost_balanced_SMOTE_class) == 1] <- "Minority"
+
+```
+
+# Eğri altında kalan alan (AUC) hesaplaması yapılması
+
+### AUC Grafiği
+
+```{r  fig.width=5, fig.height=5}
+library(ROCR)
+
+
+pr_tree_imbalanced <- prediction(as.numeric(yhat_tree_imbalanced_prob[,2]), test_data_imbalanced$Class)
+prf_tree_imbalanced <- performance(pr_tree_imbalanced, measure = "tpr", x.measure = "fpr")
+plot(prf_tree_imbalanced, lty=1, lwd=2, main = "Dengesiz Veri")
+
+pr_rf_imbalanced<- prediction(as.numeric(yhat_rf_imbalanced_prob[,2]), test_data_imbalanced$Class)
+prf_rf_imbalanced <- performance(pr_rf_imbalanced, measure = "tpr", x.measure = "fpr")
+plot(prf_rf_imbalanced, add=TRUE , lty=2, lwd=2)
+
+pr_xgboost_imbalanced <- prediction(as.numeric(yhat_xgboost_imbalanced_prob), test_data_imbalanced$Class)
+prf_xgboost_imbalanced <- performance(pr_xgboost_imbalanced, measure = "tpr", x.measure = "fpr")
+plot(prf_xgboost_imbalanced, add=TRUE , lty=3, lwd=2)
+
+abline(0,1)
+
+auc_tree_imbalanced <- performance(pr_tree_imbalanced, measure = "auc")
+auc_tree_imbalanced <- auc_tree_imbalanced@y.values[[1]]
+
+
+auc_rf_imbalanced <- performance(pr_rf_imbalanced, measure = "auc")
+auc_rf_imbalanced <- auc_rf_imbalanced@y.values[[1]]
+
+auc_xgboost_imbalanced <- performance(pr_xgboost_imbalanced, measure = "auc")
+auc_xgboost_imbalanced <- auc_xgboost_imbalanced@y.values[[1]]
+
+model_adi <- c(
+               paste(" CT: ", round(auc_tree_imbalanced,3),sep = " "),
+               paste(" RF: ", round(auc_rf_imbalanced,3),sep = " "),
+               paste(" XB: ", round(auc_xgboost_imbalanced,3),sep = " ")
+               )
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomright", legend=baslik, lwd=2, lty=c(1,2,3))
+
+
+
+
+pr_tree_balanced_ROS <- prediction(as.numeric(yhat_tree_balanced_ROS_prob[,2]), test_data_imbalanced$Class)
+prf_tree_balanced_ROS <- performance(pr_tree_balanced_ROS, measure = "tpr", x.measure = "fpr")
+plot(prf_tree_balanced_ROS, lty=1, lwd=2, main = "ROS")
+
+pr_rf_balanced_ROS<- prediction(as.numeric(yhat_rf_balanced_ROS_prob[,2]), test_data_imbalanced$Class)
+prf_rf_balanced_ROS <- performance(pr_rf_balanced_ROS, measure = "tpr", x.measure = "fpr")
+plot(prf_rf_balanced_ROS, add=TRUE , lty=2, lwd=2)
+
+pr_xgboost_balanced_ROS <- prediction(as.numeric(yhat_xgboost_balanced_ROS_prob), test_data_imbalanced$Class)
+prf_xgboost_balanced_ROS <- performance(pr_xgboost_balanced_ROS, measure = "tpr", x.measure = "fpr")
+plot(prf_xgboost_balanced_ROS, add=TRUE , lty=3, lwd=2)
+
+abline(0,1)
+
+auc_tree_balanced_ROS <- performance(pr_tree_balanced_ROS, measure = "auc")
+auc_tree_balanced_ROS <- auc_tree_balanced_ROS@y.values[[1]]
+
+auc_rf_balanced_ROS <- performance(pr_rf_balanced_ROS, measure = "auc")
+auc_rf_balanced_ROS <- auc_rf_balanced_ROS@y.values[[1]]
+
+auc_xgboost_balanced_ROS <- performance(pr_xgboost_balanced_ROS, measure = "auc")
+auc_xgboost_balanced_ROS <- auc_xgboost_balanced_ROS@y.values[[1]]
+
+model_adi <- c(
+               paste(" CT : ", round(auc_tree_balanced_ROS,3),sep = " "),
+               paste(" RF : ", round(auc_rf_balanced_ROS,3),sep = " "),
+               paste(" XB : ", round(auc_xgboost_balanced_ROS,3),sep = " ")
+               )
+
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomright", legend=baslik, lwd=2, lty=c(1,2,3))
+
+
+
+
+pr_tree_balanced_SMOTE <- prediction(as.numeric(yhat_tree_balanced_SMOTE_prob[,2]), test_data_imbalanced$Class)
+prf_tree_balanced_SMOTE <- performance(pr_tree_balanced_SMOTE, measure = "tpr", x.measure = "fpr")
+plot(prf_tree_balanced_SMOTE, lty=1, lwd=2, main = "SMOTE")
+
+pr_rf_balanced_SMOTE<- prediction(as.numeric(yhat_rf_balanced_SMOTE_prob[,2]), test_data_imbalanced$Class)
+prf_rf_balanced_SMOTE <- performance(pr_rf_balanced_SMOTE, measure = "tpr", x.measure = "fpr")
+plot(prf_rf_balanced_SMOTE, add=TRUE , lty=2, lwd=2)
+
+pr_xgboost_balanced_SMOTE <- prediction(as.numeric(yhat_xgboost_balanced_SMOTE_prob), test_data_imbalanced$Class)
+prf_xgboost_balanced_SMOTE <- performance(pr_xgboost_balanced_SMOTE, measure = "tpr", x.measure = "fpr")
+plot(prf_xgboost_balanced_SMOTE, add=TRUE , lty=3, lwd=2)
+
+abline(0,1)
+
+auc_tree_balanced_SMOTE <- performance(pr_tree_balanced_SMOTE, measure = "auc")
+auc_tree_balanced_SMOTE <- auc_tree_balanced_SMOTE@y.values[[1]]
+
+auc_rf_balanced_SMOTE <- performance(pr_rf_balanced_SMOTE, measure = "auc")
+auc_rf_balanced_SMOTE <- auc_rf_balanced_SMOTE@y.values[[1]]
+
+auc_xgboost_balanced_SMOTE <- performance(pr_xgboost_balanced_SMOTE, measure = "auc")
+auc_xgboost_balanced_SMOTE <- auc_xgboost_balanced_SMOTE@y.values[[1]]
+
+
+model_adi <- c(
+               paste(" CT : ", round(auc_tree_balanced_SMOTE,3),sep = " "),
+               paste(" RF : ", round(auc_rf_balanced_SMOTE,3),sep = " "),
+               paste(" XB : ", round(auc_xgboost_balanced_SMOTE,3),sep = " ")
+               )
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomright", legend=baslik, lwd=2, lty=c(1,2,3))
+
+```
+
+### AUC-PR Grafik
+
+```{r fig.height=5, fig.width=5}
+library(ROCR)
+
+prf_tree_imbalanced <- performance(pr_tree_imbalanced, measure = "prec", x.measure = "rec")
+plot(prf_tree_imbalanced, lty=1, lwd=2, main = "Dengesiz Veri")
+
+prf_rf_imbalanced <- performance(pr_rf_imbalanced, measure = "prec", x.measure = "rec")
+plot(prf_rf_imbalanced, add=TRUE , lty=2, lwd=2)
+
+prf_xgboost_imbalanced <- performance(pr_xgboost_imbalanced, measure = "prec", x.measure = "rec")
+plot(prf_xgboost_imbalanced, add=TRUE , lty=3, lwd=2)
+
+
+
+aucpr_tree_imbalanced <- performance(pr_tree_imbalanced, "aucpr")
+aucpr_tree_imbalanced <- aucpr_tree_imbalanced@y.values[[1]]
+
+aucpr_rf_imbalanced <- performance(pr_rf_imbalanced,"aucpr")
+aucpr_rf_imbalanced <- aucpr_rf_imbalanced@y.values[[1]]
+
+aucpr_xgboost_imbalanced <- performance(pr_xgboost_imbalanced, "aucpr")
+aucpr_xgboost_imbalanced <- aucpr_xgboost_imbalanced@y.values[[1]]
+
+
+model_adi <- c(
+               paste(" CT: ", round(aucpr_tree_imbalanced,3),sep = " "),
+               paste(" RF: ", round(aucpr_rf_imbalanced,3),sep = " "),
+               paste(" XB: ", round(aucpr_xgboost_imbalanced,3),sep = " ")
+               )
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomleft", legend=baslik, lwd=2, lty=c(1,2,3))
+
+
+
+
+
+prf_tree_balanced_ROS <- performance(pr_tree_balanced_ROS, measure = "prec", x.measure = "rec")
+plot(prf_tree_balanced_ROS, lty=1, lwd=2, main = "ROS")
+
+prf_rf_balanced_ROS <- performance(pr_rf_balanced_ROS, measure = "prec", x.measure = "rec")
+plot(prf_rf_balanced_ROS, add=TRUE , lty=2, lwd=2)
+
+prf_xgboost_balanced_ROS <- performance(pr_xgboost_balanced_ROS, measure = "prec", x.measure = "rec")
+plot(prf_xgboost_balanced_ROS, add=TRUE , lty=3, lwd=2)
+
+
+
+aucpr_tree_balanced_ROS <- performance(pr_tree_balanced_ROS, "aucpr")
+aucpr_tree_balanced_ROS <- aucpr_tree_balanced_ROS@y.values[[1]]
+
+aucpr_rf_balanced_ROS <- performance(pr_rf_balanced_ROS, "aucpr")
+aucpr_rf_balanced_ROS <- aucpr_rf_balanced_ROS@y.values[[1]]
+
+aucpr_xgboost_balanced_ROS <- performance(pr_xgboost_balanced_ROS, "aucpr")
+aucpr_xgboost_balanced_ROS <- aucpr_xgboost_balanced_ROS@y.values[[1]]
+
+model_adi <- c(
+               paste(" CT : ", round(aucpr_tree_balanced_ROS,3),sep = " "),
+               paste(" RF : ", round(aucpr_rf_balanced_ROS,3),sep = " "),
+               paste(" XB : ", round(aucpr_xgboost_balanced_ROS,3),sep = " ")
+               )
+
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomleft", legend=baslik, lwd=2, lty=c(1,2,3))
+
+
+
+
+
+prf_tree_balanced_SMOTE <- performance(pr_tree_balanced_SMOTE, measure = "prec", x.measure = "rec")
+plot(prf_tree_balanced_SMOTE, lty=1, lwd=2, main = "SMOTE")
+
+prf_rf_balanced_SMOTE <- performance(pr_rf_balanced_SMOTE, measure = "prec", x.measure = "rec")
+plot(prf_rf_balanced_SMOTE, add=TRUE , lty=2, lwd=2)
+
+prf_xgboost_balanced_SMOTE <- performance(pr_xgboost_balanced_SMOTE, measure = "prec", x.measure = "rec")
+plot(prf_xgboost_balanced_SMOTE, add=TRUE , lty=3, lwd=2)
+
+
+
+aucpr_tree_balanced_SMOTE <- performance(pr_tree_balanced_SMOTE, measure = "aucpr")
+aucpr_tree_balanced_SMOTE <- aucpr_tree_balanced_SMOTE@y.values[[1]]
+
+aucpr_rf_balanced_SMOTE <- performance(pr_rf_balanced_SMOTE, measure = "aucpr")
+aucpr_rf_balanced_SMOTE <- aucpr_rf_balanced_SMOTE@y.values[[1]]
+
+aucpr_xgboost_balanced_SMOTE <- performance(pr_xgboost_balanced_SMOTE, measure = "aucpr")
+aucpr_xgboost_balanced_SMOTE <- aucpr_xgboost_balanced_SMOTE@y.values[[1]]
+
+
+model_adi <- c(
+               paste(" CT : ", round(aucpr_tree_balanced_SMOTE,3),sep = " "),
+               paste(" RF : ", round(aucpr_rf_balanced_SMOTE,3),sep = " "),
+               paste(" XB : ", round(aucpr_xgboost_balanced_SMOTE,3),sep = " ")
+               )
+
+baslik <- paste(" ",model_adi,sep=" ")
+legend("bottomleft", legend=baslik, lwd=2, lty=c(1,2,3))
+
+```
+
+AUC Precision-Recall Eğrisi altında kalan alan hesabının dengesizlik olan veride daha ayırt edici olduğu için bu ölçü de hesaplamaya eklendi.
+
+### Karmaşıklık Matrisi Hesaplanması
+ 
+```{r fig.height=8 }
+
+basliklar = c("CT","RF", "XG")
+
+xtab_tree_imbalanced <- table(as.factor(yhat_tree_imbalanced_class), 
+                              test_data_imbalanced$Class)
+
+xtab_rf_imbalanced <- table(as.factor(yhat_rf_imbalanced_class), 
+                            test_data_imbalanced$Class)
+
+xtab_xgboost_imbalanced <- table(as.factor(yhat_xgboost_imbalanced_class), 
+                                 test_data_imbalanced$Class)
+
+
+xtab_tree_balanced_ROS <- table(as.factor(yhat_tree_balanced_ROS_class), 
+                                   test_data_imbalanced$Class)
+
+xtab_rf_balanced_ROS <- table(as.factor(yhat_rf_balanced_ROS_class), 
+                                 test_data_imbalanced$Class)
+
+xtab_xgboost_balanced_ROS <- table(as.factor(yhat_xgboost_balanced_ROS_class), 
+                                      test_data_imbalanced$Class)
+
+
+xtab_tree_balanced_SMOTE <- table(as.factor(yhat_tree_balanced_SMOTE_class), 
+                                   test_data_imbalanced$Class)
+
+xtab_rf_balanced_SMOTE <- table(as.factor(yhat_rf_balanced_SMOTE_class), 
+                                 test_data_imbalanced$Class)
+
+xtab_xgboost_balanced_SMOTE <- table(as.factor(yhat_xgboost_balanced_SMOTE_class), 
+                                      test_data_imbalanced$Class)
+
+
+kable(xtab_tree_imbalanced)
+kable(xtab_rf_imbalanced)
+kable(xtab_xgboost_imbalanced) 	
+
+kable(xtab_tree_balanced_ROS)
+kable(xtab_rf_balanced_ROS)
+kable(xtab_xgboost_balanced_ROS)
+
+kable(xtab_tree_balanced_SMOTE)
+kable(xtab_rf_balanced_SMOTE)
+kable(xtab_xgboost_balanced_SMOTE)
+
+```
+
+### Performans Metriklerinin Hesaplanması
+
+```{r }
+accuracy_tree_imbalanced <- sum(xtab_tree_imbalanced[1], xtab_tree_imbalanced[4]) / 
+                            sum(xtab_tree_imbalanced[1:4])
+
+precision_tree_imbalanced <- xtab_tree_imbalanced[4] / 
+                             sum(xtab_tree_imbalanced[4], xtab_tree_imbalanced[2])
+
+sensitivity_tree_imbalanced <- xtab_tree_imbalanced[4] / 
+                               sum(xtab_tree_imbalanced[4], xtab_tree_imbalanced[3])
+
+specificity_tree_imbalanced <- xtab_tree_imbalanced[1] / 
+                               sum(xtab_tree_imbalanced[1], xtab_tree_imbalanced[2])
+
+f1score_tree_imbalanced <- 2 * (sensitivity_tree_imbalanced * precision_tree_imbalanced) /
+                               (sensitivity_tree_imbalanced + precision_tree_imbalanced)
+
+f05score_tree_imbalanced <- 1.25 * (sensitivity_tree_imbalanced * precision_tree_imbalanced /
+                                   (0.25 * precision_tree_imbalanced + sensitivity_tree_imbalanced))
+
+
+
+accuracy_rf_imbalanced <- sum(xtab_rf_imbalanced[1], xtab_rf_imbalanced[4]) / 
+                          sum(xtab_rf_imbalanced[1:4])
+
+precision_rf_imbalanced <- xtab_rf_imbalanced[4] / 
+                           sum(xtab_rf_imbalanced[4], xtab_rf_imbalanced[2])
+
+sensitivity_rf_imbalanced <- xtab_rf_imbalanced[4] / 
+                             sum(xtab_rf_imbalanced[4], xtab_rf_imbalanced[3])
+
+specificity_rf_imbalanced <- xtab_rf_imbalanced[1] / 
+                             sum(xtab_rf_imbalanced[1], xtab_rf_imbalanced[2])
+
+f1score_rf_imbalanced <- 2 * (sensitivity_rf_imbalanced * precision_rf_imbalanced) /
+                             (sensitivity_rf_imbalanced + precision_rf_imbalanced)
+
+f05score_rf_imbalanced <- 1.25 * (sensitivity_rf_imbalanced * precision_rf_imbalanced /
+                                 (0.25 * precision_rf_imbalanced + sensitivity_rf_imbalanced))
+
+
+
+accuracy_xgboost_imbalanced <- sum(xtab_xgboost_imbalanced[1], xtab_xgboost_imbalanced[4]) / 
+                               sum(xtab_xgboost_imbalanced[1:4])
+
+precision_xgboost_imbalanced <- xtab_xgboost_imbalanced[4] / 
+                                  sum(xtab_xgboost_imbalanced[4], xtab_xgboost_imbalanced[2])
+
+sensitivity_xgboost_imbalanced <- xtab_xgboost_imbalanced[4] / 
+                                  sum(xtab_xgboost_imbalanced[4], xtab_xgboost_imbalanced[3])
+
+specificity_xgboost_imbalanced <- xtab_xgboost_imbalanced[1] / 
+                                  sum(xtab_xgboost_imbalanced[1], xtab_xgboost_imbalanced[2])
+
+f1score_xgboost_imbalanced <- 2 * (sensitivity_xgboost_imbalanced * precision_xgboost_imbalanced) /
+                                  (sensitivity_xgboost_imbalanced + precision_xgboost_imbalanced)
+
+f05score_xgboost_imbalanced <- 1.25 * (sensitivity_xgboost_imbalanced * precision_xgboost_imbalanced /
+                                      (0.25 * precision_xgboost_imbalanced + sensitivity_xgboost_imbalanced))
+
+				
+
+accuracy_tree_balanced_ROS <- sum(xtab_tree_balanced_ROS[1], xtab_tree_balanced_ROS[4]) / 
+                                 sum(xtab_tree_balanced_ROS[1:4])
+
+precision_tree_balanced_ROS <- xtab_tree_balanced_ROS[4] / 
+                                  sum(xtab_tree_balanced_ROS[4], xtab_tree_balanced_ROS[2])
+                                  
+sensitivity_tree_balanced_ROS <- xtab_tree_balanced_ROS[4] / 
+                                    sum(xtab_tree_balanced_ROS[4], xtab_tree_balanced_ROS[3])
+
+specificity_tree_balanced_ROS <- xtab_tree_balanced_ROS[1] / 
+                                    sum(xtab_tree_balanced_ROS[1], xtab_tree_balanced_ROS[2])
+
+f1score_tree_balanced_ROS <- 2 * (sensitivity_tree_balanced_ROS * precision_tree_balanced_ROS) /
+                                    (sensitivity_tree_balanced_ROS + precision_tree_balanced_ROS)
+
+f05score_tree_balanced_ROS <- 1.25 * (sensitivity_tree_balanced_ROS * precision_tree_balanced_ROS /
+                                        (0.25 * precision_tree_balanced_ROS + sensitivity_tree_balanced_ROS))	
+
+
+
+accuracy_rf_balanced_ROS <- sum(xtab_rf_balanced_ROS[1], xtab_rf_balanced_ROS[4]) / 
+                               sum(xtab_rf_balanced_ROS[1:4])
+
+precision_rf_balanced_ROS <- xtab_rf_balanced_ROS[4] / 
+                                  sum(xtab_rf_balanced_ROS[4], xtab_rf_balanced_ROS[2])
+
+sensitivity_rf_balanced_ROS <- xtab_rf_balanced_ROS[4] / 
+                                  sum(xtab_rf_balanced_ROS[4], xtab_rf_balanced_ROS[3])
+
+specificity_rf_balanced_ROS <- xtab_rf_balanced_ROS[1] / 
+                                  sum(xtab_rf_balanced_ROS[1], xtab_rf_balanced_ROS[2])
+
+f1score_rf_balanced_ROS <- 2 * (sensitivity_rf_balanced_ROS * precision_rf_balanced_ROS) /
+                                  (sensitivity_rf_balanced_ROS + precision_rf_balanced_ROS)
+
+f05score_rf_balanced_ROS <- 1.25 * (sensitivity_rf_balanced_ROS * precision_rf_balanced_ROS /
+                                      (0.25 * precision_rf_balanced_ROS + sensitivity_rf_balanced_ROS))
+
+
+									 
+accuracy_xgboost_balanced_ROS <- sum(xtab_xgboost_balanced_ROS[1], xtab_xgboost_balanced_ROS[4]) /
+                                    sum(xtab_xgboost_balanced_ROS[1:4])
+
+precision_xgboost_balanced_ROS <- xtab_xgboost_balanced_ROS[4] / 
+                                     sum(xtab_xgboost_balanced_ROS[4], xtab_xgboost_balanced_ROS[2])
+
+sensitivity_xgboost_balanced_ROS <- xtab_xgboost_balanced_ROS[4] / 
+                                       sum(xtab_xgboost_balanced_ROS[4], xtab_xgboost_balanced_ROS[3])
+
+specificity_xgboost_balanced_ROS <- xtab_xgboost_balanced_ROS[1] / 
+                                       sum(xtab_xgboost_balanced_ROS[1], xtab_xgboost_balanced_ROS[2])
+
+f1score_xgboost_balanced_ROS <- 2 * (sensitivity_xgboost_balanced_ROS * precision_xgboost_balanced_ROS) /
+                                       (sensitivity_xgboost_balanced_ROS + precision_xgboost_balanced_ROS)
+
+f05score_xgboost_balanced_ROS <- 1.25 * (sensitivity_xgboost_balanced_ROS * precision_xgboost_balanced_ROS / 
+                                           (0.25 * precision_xgboost_balanced_ROS + sensitivity_xgboost_balanced_ROS))
+
+
+										   
+accuracy_tree_balanced_SMOTE <- sum(xtab_tree_balanced_SMOTE[1], xtab_tree_balanced_SMOTE[4]) / 
+                                 sum(xtab_tree_balanced_SMOTE[1:4])
+
+precision_tree_balanced_SMOTE <- xtab_tree_balanced_SMOTE[4] / 
+                                  sum(xtab_tree_balanced_SMOTE[4], xtab_tree_balanced_SMOTE[2])
+
+sensitivity_tree_balanced_SMOTE <- xtab_tree_balanced_SMOTE[4] / 
+                                    sum(xtab_tree_balanced_SMOTE[4], xtab_tree_balanced_SMOTE[3])
+
+specificity_tree_balanced_SMOTE <- xtab_tree_balanced_SMOTE[1] / 
+                                    sum(xtab_tree_balanced_SMOTE[1], xtab_tree_balanced_SMOTE[2])
+
+f1score_tree_balanced_SMOTE <- 2 * (sensitivity_tree_balanced_SMOTE * precision_tree_balanced_SMOTE) /
+                                    (sensitivity_tree_balanced_SMOTE + precision_tree_balanced_SMOTE)
+
+f05score_tree_balanced_SMOTE <- 1.25 * (sensitivity_tree_balanced_SMOTE * precision_tree_balanced_SMOTE /
+                                        (0.25 * precision_tree_balanced_SMOTE + sensitivity_tree_balanced_SMOTE))
+
+
+
+accuracy_rf_balanced_SMOTE <- sum(xtab_rf_balanced_SMOTE[1], xtab_rf_balanced_SMOTE[4]) / 
+                               sum(xtab_rf_balanced_SMOTE[1:4])
+
+precision_rf_balanced_SMOTE <- xtab_rf_balanced_SMOTE[4] / 
+                                sum(xtab_rf_balanced_SMOTE[4], xtab_rf_balanced_SMOTE[2])
+
+sensitivity_rf_balanced_SMOTE <- xtab_rf_balanced_SMOTE[4] / 
+                                  sum(xtab_rf_balanced_SMOTE[4], xtab_rf_balanced_SMOTE[3])
+
+specificity_rf_balanced_SMOTE <- xtab_rf_balanced_SMOTE[1] / 
+                                  sum(xtab_rf_balanced_SMOTE[1], xtab_rf_balanced_SMOTE[2])
+
+f1score_rf_balanced_SMOTE <- 2 * (sensitivity_rf_balanced_SMOTE * precision_rf_balanced_SMOTE) /
+                                  (sensitivity_rf_balanced_SMOTE + precision_rf_balanced_SMOTE)
+
+f05score_rf_balanced_SMOTE <- 1.25 * (sensitivity_rf_balanced_SMOTE * precision_rf_balanced_SMOTE /
+                                      (0.25 * precision_rf_balanced_SMOTE + sensitivity_rf_balanced_SMOTE))
+
+										   
+
+accuracy_xgboost_balanced_SMOTE <- sum(xtab_xgboost_balanced_SMOTE[1], xtab_xgboost_balanced_SMOTE[4]) /
+                                    sum(xtab_xgboost_balanced_SMOTE[1:4])
+
+precision_xgboost_balanced_SMOTE <- xtab_xgboost_balanced_SMOTE[4] / 
+                                     sum(xtab_xgboost_balanced_SMOTE[4], xtab_xgboost_balanced_SMOTE[2])
+
+sensitivity_xgboost_balanced_SMOTE <- xtab_xgboost_balanced_SMOTE[4] / 
+                                       sum(xtab_xgboost_balanced_SMOTE[4], xtab_xgboost_balanced_SMOTE[3])
+
+specificity_xgboost_balanced_SMOTE <- xtab_xgboost_balanced_SMOTE[1] / 
+                                       sum(xtab_xgboost_balanced_SMOTE[1], xtab_xgboost_balanced_SMOTE[2])
+
+f1score_xgboost_balanced_SMOTE <- 2 * (sensitivity_xgboost_balanced_SMOTE * precision_xgboost_balanced_SMOTE) /
+                                       (sensitivity_xgboost_balanced_SMOTE + precision_xgboost_balanced_SMOTE)
+
+f05score_xgboost_balanced_SMOTE <- 1.25 * (sensitivity_xgboost_balanced_SMOTE * precision_xgboost_balanced_SMOTE /
+                                           (0.25 * precision_xgboost_balanced_SMOTE + sensitivity_xgboost_balanced_SMOTE))
+
+
+```
+
+### Doğruluk Değerleri
+
+```{r fig.height=6 }
+
+accuracy_imbalanced <- c(
+                 round(accuracy_tree_imbalanced,3),
+                 round(accuracy_rf_imbalanced,3),
+                 round(accuracy_xgboost_imbalanced,3)
+                 )
+
+accuracy_balanced_ROS <- c(
+                 round(accuracy_tree_balanced_ROS,3), 
+                 round(accuracy_rf_balanced_ROS,3),
+                 round(accuracy_xgboost_balanced_ROS,3)
+                 )
+
+accuracy_balanced_SMOTE <- c(
+                 round(accuracy_tree_balanced_SMOTE,3), 
+                 round(accuracy_rf_balanced_SMOTE,3),
+                 round(accuracy_xgboost_balanced_SMOTE,3)
+                 )
+
+
+dogruluk_df <- data.frame(basliklar, accuracy_imbalanced,accuracy_balanced_ROS,accuracy_balanced_SMOTE )
+kable(dogruluk_df)
+```
+
+### Precision Değerleri
+
+```{r fig.height=6 }
+
+precision_imbalanced <- c(
+                 round(precision_tree_imbalanced,3),
+                 round(precision_rf_imbalanced,3),
+                 round(precision_xgboost_imbalanced,3)
+                 )
+
+precision_balanced_ROS <- c(
+                 round(precision_tree_balanced_ROS,3), 
+                 round(precision_rf_balanced_ROS,3),
+                 round(precision_xgboost_balanced_ROS,3)
+                 )
+
+precision_balanced_SMOTE <- c(
+                 round(precision_tree_balanced_SMOTE,3), 
+                 round(precision_rf_balanced_SMOTE,3),
+                 round(precision_xgboost_balanced_SMOTE,3)
+                 )
+
+
+precision_df <- data.frame(basliklar, precision_imbalanced,precision_balanced_ROS,precision_balanced_SMOTE )
+kable(precision_df)
+```
+
+### Sensitivity 
+
+```{r fig.height=6 }
+
+sensitivity_imbalanced <- c(
+                 round(sensitivity_tree_imbalanced,3),
+                 round(sensitivity_rf_imbalanced,3),
+                 round(sensitivity_xgboost_imbalanced,3)
+                 )
+
+sensitivity_balanced_ROS <- c(
+                 round(sensitivity_tree_balanced_ROS,3), 
+                 round(sensitivity_rf_balanced_ROS,3),
+                 round(sensitivity_xgboost_balanced_ROS,3)
+                 )
+
+sensitivity_balanced_SMOTE <- c(
+                 round(sensitivity_tree_balanced_SMOTE,3), 
+                 round(sensitivity_rf_balanced_SMOTE,3),
+                 round(sensitivity_xgboost_balanced_SMOTE,3)
+                 )
+
+
+sensitivity_df <- data.frame(basliklar, sensitivity_imbalanced,sensitivity_balanced_ROS,sensitivity_balanced_SMOTE )
+kable(sensitivity_df)
+```
+
+### Specificity 
+
+```{r fig.height=6 }
+
+specificity_imbalanced <- c(
+                 round(specificity_tree_imbalanced,3),
+                 round(specificity_rf_imbalanced,3),
+                 round(specificity_xgboost_imbalanced,3)
+                 )
+
+specificity_balanced_ROS <- c(
+                 round(specificity_tree_balanced_ROS,3), 
+                 round(specificity_rf_balanced_ROS,3),
+                 round(specificity_xgboost_balanced_ROS,3)
+                 )
+
+specificity_balanced_SMOTE <- c(
+                 round(specificity_tree_balanced_SMOTE,3), 
+                 round(specificity_rf_balanced_SMOTE,3),
+                 round(specificity_xgboost_balanced_SMOTE,3)
+                 )
+
+
+specificity_df <- data.frame(basliklar, specificity_imbalanced,specificity_balanced_ROS,specificity_balanced_SMOTE )
+kable(specificity_df)
+```
+
+### F1 Score 
+
+```{r fig.height=6 }
+
+f1score_imbalanced <- c(
+                 round(f1score_tree_imbalanced,3),
+                 round(f1score_rf_imbalanced,3),
+                 round(f1score_xgboost_imbalanced,3)
+                 )
+
+f1score_balanced_ROS <- c(
+                 round(f1score_tree_balanced_ROS,3), 
+                 round(f1score_rf_balanced_ROS,3),
+                 round(f1score_xgboost_balanced_ROS,3)
+                 )
+
+f1score_balanced_SMOTE <- c(
+                 round(f1score_tree_balanced_SMOTE,3), 
+                 round(f1score_rf_balanced_SMOTE,3),
+                 round(f1score_xgboost_balanced_SMOTE,3)
+                 )
+
+
+f1score_df <- data.frame(basliklar, f1score_imbalanced,f1score_balanced_ROS,f1score_balanced_SMOTE )
+kable(f1score_df)
+```
+
+### F0.5 Score
+
+```{r fig.height=6 }
+
+f05score_imbalanced <- c(
+                 round(f05score_tree_imbalanced,3),
+                 round(f05score_rf_imbalanced,3),
+                 round(f05score_xgboost_imbalanced,3)
+                 )
+
+f05score_balanced_ROS <- c(
+                 round(f05score_tree_balanced_ROS,3), 
+                 round(f05score_rf_balanced_ROS,3),
+                 round(f05score_xgboost_balanced_ROS,3)
+                 )
+
+f05score_balanced_SMOTE <- c(
+                 round(f05score_tree_balanced_SMOTE,3), 
+                 round(f05score_rf_balanced_SMOTE,3),
+                 round(f05score_xgboost_balanced_SMOTE,3)
+                 )
+
+
+f05score_df <- data.frame(basliklar, f05score_imbalanced,f05score_balanced_ROS,f05score_balanced_SMOTE )
+kable(f05score_df)
+```
+
+### PR-AUC
+
+```{r fig.height=6 }
+
+aucpr_imbalanced <- c(
+                 round(aucpr_tree_imbalanced,3),
+                 round(aucpr_rf_imbalanced,3),
+                 round(aucpr_xgboost_imbalanced,3)
+                 )
+
+aucpr_balanced_ROS <- c(
+                 round(aucpr_tree_balanced_ROS,3), 
+                 round(aucpr_rf_balanced_ROS,3),
+                 round(aucpr_xgboost_balanced_ROS,3)
+                 )
+
+aucpr_balanced_SMOTE <- c(
+                 round(aucpr_tree_balanced_SMOTE,3), 
+                 round(aucpr_rf_balanced_SMOTE,3),
+                 round(aucpr_xgboost_balanced_SMOTE,3)
+                 )
+
+
+aucpr_df <- data.frame(basliklar, aucpr_imbalanced,aucpr_balanced_ROS,aucpr_balanced_SMOTE )
+kable(aucpr_df)
+```
+
+### ROC AUC
+
+```{r fig.height=6 }
+
+auc_imbalanced <- c(
+                 round(auc_tree_imbalanced,3),
+                 round(auc_rf_imbalanced,3),
+                 round(auc_xgboost_imbalanced,3)
+                 )
+
+auc_balanced_ROS <- c(
+                 round(auc_tree_balanced_ROS,3), 
+                 round(auc_rf_balanced_ROS,3),
+                 round(auc_xgboost_balanced_ROS,3)
+                 )
+
+auc_balanced_SMOTE <- c(
+                 round(auc_tree_balanced_SMOTE,3), 
+                 round(auc_rf_balanced_SMOTE,3),
+                 round(auc_xgboost_balanced_SMOTE,3)
+                 )
+
+
+auc_df <- data.frame(basliklar, auc_imbalanced,auc_balanced_ROS,auc_balanced_SMOTE )
+kable(auc_df)
+```
+
